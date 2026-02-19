@@ -4,6 +4,7 @@ pydantic
 langdetect
 langchain
 langchain-community
+langchain-classic
 langchain-groq
 langchain-huggingface
 faiss-cpu

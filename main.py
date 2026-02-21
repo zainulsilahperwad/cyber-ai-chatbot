@@ -10,8 +10,8 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
-# CORRECTED MODERN IMPORTS
-from langchain.chains import create_retrieval_chain
+# --- NEWEST IMPORT PATHS FOR LANGCHAIN 0.3+ ---
+from langchain.chains.retrieval import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 
 app = FastAPI(title="CyberAI Ultra-Light")
@@ -28,7 +28,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 
-# 1. CLOUD EMBEDDINGS (1024 Dimensions)
+# 1. CLOUD EMBEDDINGS
 embeddings = PineconeEmbeddings(
     model="multilingual-e5-large", 
     pinecone_api_key=PINECONE_API_KEY
@@ -55,7 +55,7 @@ prompt = ChatPromptTemplate.from_messages([
     ("human", "{input}"),
 ])
 
-# Create the chain logic
+# Create the chains
 combine_docs_chain = create_stuff_documents_chain(llm, prompt)
 retriever = vectorstore.as_retriever()
 chain = create_retrieval_chain(retriever, combine_docs_chain)

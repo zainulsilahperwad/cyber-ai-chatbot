@@ -2,7 +2,7 @@ fastapi
 uvicorn
 pydantic
 langdetect
-langchain
+langchain>=0.3.0
 langchain-community
 langchain-groq
 langchain-pinecone

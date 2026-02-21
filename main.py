@@ -10,9 +10,9 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
 
-# Updated imports for modern LangChain
+# CORRECTED MODERN IMPORTS
+from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains.retrieval import create_retrieval_chain
 
 app = FastAPI(title="CyberAI Ultra-Light")
 
@@ -55,7 +55,7 @@ prompt = ChatPromptTemplate.from_messages([
     ("human", "{input}"),
 ])
 
-# Create the chain
+# Create the chain logic
 combine_docs_chain = create_stuff_documents_chain(llm, prompt)
 retriever = vectorstore.as_retriever()
 chain = create_retrieval_chain(retriever, combine_docs_chain)
@@ -72,10 +72,7 @@ def home():
 
 @app.post("/ingest")
 async def ingest():
-    # Dynamic path fix for Render environments
-    base_path = os.path.dirname(__file__)
-    file_path = os.path.join(base_path, 'cyber_security.json')
-    
+    file_path = os.path.join(os.path.dirname(__file__), 'cyber_security.json')
     with open(file_path, 'r') as f:
         data = json.load(f)
     docs = [Document(page_content=d["text"]) for d in data]
@@ -84,6 +81,5 @@ async def ingest():
 
 @app.post("/chat")
 async def chat(input: ChatInput):
-    # Using the defined chain
     response = chain.invoke({"input": input.message, "chat_history": []})
     return {"reply": response["answer"]}

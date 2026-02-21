@@ -1,9 +1,7 @@
 fastapi
 uvicorn
 pydantic
-langdetect
-langchain>=0.3.0
-langchain-community
+langchain-core>=0.3.0
 langchain-groq
 langchain-pinecone
 pinecone-client

@@ -9,6 +9,8 @@ from langchain_pinecone import PineconeVectorStore, PineconeEmbeddings
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, AIMessage
+
+# Updated imports for modern LangChain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain.chains.retrieval import create_retrieval_chain
 
@@ -26,8 +28,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
 
-# 1. CLOUD EMBEDDINGS (No 'torch' needed!)
-# This model is hosted by Pinecone, so it uses 0MB of your Render RAM.
+# 1. CLOUD EMBEDDINGS (1024 Dimensions)
 embeddings = PineconeEmbeddings(
     model="multilingual-e5-large", 
     pinecone_api_key=PINECONE_API_KEY
@@ -40,7 +41,7 @@ vectorstore = PineconeVectorStore(
     pinecone_api_key=PINECONE_API_KEY
 )
 
-# 3. BRAIN (Groq Llama 3.1)
+# 3. LLM SETUP
 llm = ChatGroq(api_key=GROQ_API_KEY, model="llama-3.1-8b-instant", temperature=0)
 
 # --- RAG SETUP ---
@@ -54,16 +55,28 @@ prompt = ChatPromptTemplate.from_messages([
     ("human", "{input}"),
 ])
 
-chain = create_retrieval_chain(vectorstore.as_retriever(), create_stuff_documents_chain(llm, prompt))
+# Create the chain
+combine_docs_chain = create_stuff_documents_chain(llm, prompt)
+retriever = vectorstore.as_retriever()
+chain = create_retrieval_chain(retriever, combine_docs_chain)
 
-# --- ENDPOINTS ---
+# --- MODELS ---
 class ChatInput(BaseModel):
     message: str
     session_id: str = "default"
 
+# --- ENDPOINTS ---
+@app.get("/")
+def home():
+    return {"message": "CyberAI is running"}
+
 @app.post("/ingest")
 async def ingest():
-    with open('cyber_security.json', 'r') as f:
+    # Dynamic path fix for Render environments
+    base_path = os.path.dirname(__file__)
+    file_path = os.path.join(base_path, 'cyber_security.json')
+    
+    with open(file_path, 'r') as f:
         data = json.load(f)
     docs = [Document(page_content=d["text"]) for d in data]
     vectorstore.add_documents(docs)
@@ -71,5 +84,6 @@ async def ingest():
 
 @app.post("/chat")
 async def chat(input: ChatInput):
+    # Using the defined chain
     response = chain.invoke({"input": input.message, "chat_history": []})
     return {"reply": response["answer"]}

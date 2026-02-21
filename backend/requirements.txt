@@ -3,6 +3,7 @@ uvicorn
 pydantic
 langdetect
 langchain
+langchain-community
 langchain-groq
 langchain-pinecone
 pinecone-client

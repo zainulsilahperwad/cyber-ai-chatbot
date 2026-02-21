@@ -3,48 +3,16 @@ import json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from langchain_groq import ChatGroq
-from langchain_pinecone import PineconeVectorStore, PineconeEmbeddings
-from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+from groq import Groq
+from pinecone import Pinecone
 
-app = FastAPI(title="CyberAI Fixed")
-
+app = FastAPI(title="CyberAI Direct")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# --- CONFIG ---
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
-
-# 1. EMBEDDINGS & STORE
-embeddings = PineconeEmbeddings(model="multilingual-e5-large", pinecone_api_key=PINECONE_API_KEY)
-vectorstore = PineconeVectorStore(index_name=INDEX_NAME, embedding=embeddings, pinecone_api_key=PINECONE_API_KEY)
-retriever = vectorstore.as_retriever()
-
-# 2. MODEL
-llm = ChatGroq(api_key=GROQ_API_KEY, model="llama-3.1-8b-instant", temperature=0)
-
-# 3. MODERN LCEL CHAIN (No 'langchain.chains' needed)
-template = """You are a Cyber Security Expert. Use the context to answer.
-Context: {context}
-Question: {question}
-Answer in the user's language."""
-
-prompt = ChatPromptTemplate.from_template(template)
-
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
-
-# This is the "Modern Chain" that replaces the broken one
-rag_chain = (
-    {"context": retriever | format_docs, "question": RunnablePassthrough()}
-    | prompt
-    | llm
-    | StrOutputParser()
-)
+# --- CLIENT SETUP ---
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
 
 class ChatInput(BaseModel):
     message: str
@@ -52,17 +20,49 @@ class ChatInput(BaseModel):
 @app.get("/")
 def home(): return {"status": "online"}
 
-@app.post("/ingest")
-async def ingest():
-    file_path = os.path.join(os.path.dirname(__file__), 'cyber_security.json')
-    with open(file_path, 'r') as f:
-        data = json.load(f)
-    docs = [Document(page_content=d["text"]) for d in data]
-    vectorstore.add_documents(docs)
-    return {"status": "Complete"}
-
 @app.post("/chat")
 async def chat(input: ChatInput):
-    # Using the new LCEL syntax
-    response = rag_chain.invoke(input.message)
-    return {"reply": response}
+    # 1. Get Embeddings (Using Pinecone's direct inference)
+    # This replaces the entire LangChain embedding mess
+    res = pc.inference.embed(
+        model="multilingual-e5-large",
+        inputs=[input.message],
+        parameters={"input_type": "query"}
+    )
+    query_vector = res[0].values
+
+    # 2. Search Pinecone
+    search_res = index.query(vector=query_vector, top_k=3, include_metadata=True)
+    context = "\n".join([item.metadata['text'] for item in search_res.matches if 'text' in item.metadata])
+
+    # 3. Direct Groq Call
+    chat_completion = groq_client.chat.completions.create(
+        messages=[
+            {"role": "system", "content": f"You are a Cyber Security Expert. Use this context: {context}"},
+            {"role": "user", "content": input.message}
+        ],
+        model="llama-3.1-8b-instant",
+    )
+    
+    return {"reply": chat_completion.choices[0].message.content}
+
+@app.post("/ingest")
+async def ingest():
+    with open('cyber_security.json', 'r') as f:
+        data = json.load(f)
+    
+    for i, entry in enumerate(data):
+        # Embed each text entry
+        res = pc.inference.embed(
+            model="multilingual-e5-large",
+            inputs=[entry["text"]],
+            parameters={"input_type": "passage"}
+        )
+        # Upload to Pinecone
+        index.upsert(vectors=[{
+            "id": f"vec_{i}", 
+            "values": res[0].values, 
+            "metadata": {"text": entry["text"]}
+        }])
+        
+    return {"status": "Ingest complete"}

@@ -1,5 +1,13 @@
 fastapi
 uvicorn
 pydantic
-groq
-pinecone-client
+langdetect
+langchain==0.1.20
+langchain-community==0.0.38
+langchain-groq
+langchain-huggingface
+faiss-cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.1+cpu
+sentence-transformers
+requests

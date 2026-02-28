@@ -3,66 +3,120 @@ import json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from groq import Groq
-from pinecone import Pinecone
+from langdetect import detect, DetectorFactory
+from langchain_groq import ChatGroq
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
 
-app = FastAPI(title="CyberAI Direct")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# --- Fixed Modern Imports for 0.1.x ---
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 
-# --- CLIENT SETUP ---
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-index = pc.Index(os.getenv("PINECONE_INDEX_NAME"))
+# Standardize language detection
+DetectorFactory.seed = 0
+app = FastAPI(title="Optimized CyberAI Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Render environment variables
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+
+# 1. LOAD VECTORSTORE
+# Using a lightweight model to save RAM
+embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+def get_vectorstore():
+    index_path = "faiss_index_cache"
+    # Note: allow_dangerous_deserialization is required for loading local FAISS files
+    if os.path.exists(index_path):
+        return FAISS.load_local(index_path, embeddings, allow_dangerous_deserialization=True)
+    
+    # Fallback if cache doesn't exist
+    if os.path.exists('cyber_security.json'):
+        with open('cyber_security.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        docs = [Document(page_content=entry["text"]) for entry in data if "text" in entry]
+        v_store = FAISS.from_documents(docs, embeddings)
+        v_store.save_local(index_path)
+        return v_store
+    else:
+        # Emergency empty store so the app doesn't crash if JSON is missing
+        return FAISS.from_documents([Document(page_content="Database empty")], embeddings)
+
+vectorstore = get_vectorstore()
+
+# 2. MODEL SETUP
+llm = ChatGroq(api_key=GROQ_API_KEY, model="llama-3.1-8b-instant", temperature=0)
+
+chat_histories = {}
+
+LANG_MAP = {
+    "en": "ENGLISH", "es": "SPANISH", "fr": "FRENCH", "de": "GERMAN",
+    "it": "ITALIAN", "pt": "PORTUGUESE", "zh-cn": "CHINESE", "ja": "JAPANESE",
+    "ko": "KOREAN", "ru": "RUSSIAN", "ar": "ARABIC", "hi": "HINDI",
+    "bn": "BENGALI", "te": "TELUGU", "mr": "MARATHI", "ta": "TAMIL",
+    "ur": "URDU", "gu": "GUJARATI", "kn": "KANNADA", "ml": "MALAYALAM",
+    "pa": "PUNJABI", "as": "ASSAMESE", "or": "ODIA", "ks": "KASHMIRI",
+    "sd": "SINDHI", "sa": "SANSKRIT", "ne": "NEPALI"
+}
+
+# 3. PROMPT & CHAIN SETUP
+system_prompt = (
+    "You are a strict Cyber Security Expert. "
+    "Use ONLY the following pieces of retrieved context to answer the question: \n\n"
+    "{context}\n\n"
+    "RULES:\n"
+    "1. If the answer is NOT in the context, say 'I am sorry, but my database does not contain information on that specific topic.'\n"
+    "2. Do NOT use outside knowledge.\n"
+    "3. You MUST respond in the same language as the user query.\n"
+    "4. Keep the response technical and professional."
+)
+
+prompt_template = ChatPromptTemplate.from_messages([
+    ("system", system_prompt),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{input}"),
+])
+
+# Create the chains using compatible paths for 0.1.20
+combine_docs_chain = create_stuff_documents_chain(llm, prompt_template)
+retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+rag_chain = create_retrieval_chain(retriever, combine_docs_chain)
 
 class ChatInput(BaseModel):
     message: str
-
-@app.get("/")
-def home(): return {"status": "online"}
+    session_id: str = "default_user"
 
 @app.post("/chat")
 async def chat(input: ChatInput):
-    # 1. Get Embeddings (Using Pinecone's direct inference)
-    # This replaces the entire LangChain embedding mess
-    res = pc.inference.embed(
-        model="multilingual-e5-large",
-        inputs=[input.message],
-        parameters={"input_type": "query"}
-    )
-    query_vector = res[0].values
+    try:
+        if len(input.message.split()) < 2:
+            full_lang = "ENGLISH"
+        else:
+            raw_lang = detect(input.message)
+            full_lang = LANG_MAP.get(raw_lang, raw_lang.upper())
+    except:
+        full_lang = "ENGLISH"
 
-    # 2. Search Pinecone
-    search_res = index.query(vector=query_vector, top_k=3, include_metadata=True)
-    context = "\n".join([item.metadata['text'] for item in search_res.matches if 'text' in item.metadata])
-
-    # 3. Direct Groq Call
-    chat_completion = groq_client.chat.completions.create(
-        messages=[
-            {"role": "system", "content": f"You are a Cyber Security Expert. Use this context: {context}"},
-            {"role": "user", "content": input.message}
-        ],
-        model="llama-3.1-8b-instant",
-    )
+    if input.session_id not in chat_histories:
+        chat_histories[input.session_id] = []
     
-    return {"reply": chat_completion.choices[0].message.content}
+    history = chat_histories[input.session_id][-5:]
 
-@app.post("/ingest")
-async def ingest():
-    with open('cyber_security.json', 'r') as f:
-        data = json.load(f)
-    
-    for i, entry in enumerate(data):
-        # Embed each text entry
-        res = pc.inference.embed(
-            model="multilingual-e5-large",
-            inputs=[entry["text"]],
-            parameters={"input_type": "passage"}
-        )
-        # Upload to Pinecone
-        index.upsert(vectors=[{
-            "id": f"vec_{i}", 
-            "values": res[0].values, 
-            "metadata": {"text": entry["text"]}
-        }])
-        
-    return {"status": "Ingest complete"}
+    # Invoke the RAG chain
+    response = rag_chain.invoke({"input": input.message, "chat_history": history})
+    answer = response["answer"]
+
+    # Update history
+    chat_histories[input.session_id].append(HumanMessage(content=input.message))
+    chat_histories[input.session_id].append(AIMessage(content=answer))
+
+    return {"reply": answer, "language": full_lang}
